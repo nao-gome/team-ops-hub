@@ -1,0 +1,10 @@
+# 個人情報が入ったCSV
+player_master.csv
+daily_condition.csv
+shift_data*.csv
+
+# 選手の写真フォルダ
+player_images/
+
+# パスワード設定フォルダ
+.streamlit/
