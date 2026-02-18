@@ -54,6 +54,22 @@ def upload_image_to_supabase(file, file_name):
         st.error(f"画像アップロードエラー: {e}")
         return None
 
+# 安全に画像を表示するヘルパー関数（今回の修正の肝）
+def show_player_image(image_val, width=100):
+    if not image_val:
+        st.write("No Image")
+        return
+
+    # URLの場合 (Supabase)
+    if str(image_val).startswith("http"):
+        st.image(image_val, width=width)
+    # ローカルファイルの場合 (存在チェック)
+    elif os.path.exists(str(image_val)):
+        st.image(image_val, width=width)
+    # どっちでもない場合 (昔のデータでファイルがない等)
+    else:
+        st.write("No Image")
+
 # カスタムCSS
 st.markdown("""
     <style>
@@ -75,7 +91,6 @@ st.markdown("""
     }
     .profile-photo img { width: 100%; height: 100%; object-fit: cover; }
     
-    /* 削除ボタンのスタイル強調 */
     div[data-testid="stExpander"] details summary p { font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
@@ -120,7 +135,6 @@ if not st.session_state.authenticated:
 # --- 5. メイン画面 ---
 st.markdown(f'<div class="full-width-header"><h1>⚽ {st.session_state.user_name} モード</h1></div>', unsafe_allow_html=True)
 
-# ログアウトボタン
 lo_col1, lo_col2 = st.columns([10, 1])
 with lo_col1:
     st.write(f"Login: **{st.session_state.user_name}**")
@@ -154,18 +168,14 @@ if st.session_state.user_role == "admin":
             for i, row in df_players.iterrows():
                 bmi = calculate_bmi(row['height'], row['weight'])
                 with st.expander(f"No.{row['number']} : {row['name']} (Pos: {row['position']})"):
-                    # 編集フォーム
                     with st.form(key=f"edit_form_{row['id']}"):
                         c1, c2 = st.columns([1, 3])
                         with c1:
-                            if row.get('image_url'):
-                                st.image(row['image_url'], width=100)
-                            else:
-                                st.write("No Image")
+                            # 修正箇所: 安全な画像表示関数を使用
+                            show_player_image(row.get('image_url'))
                         with c2:
                             e_num = st.number_input("背番号", value=int(row['number']), step=1)
                             e_pos = st.selectbox("ポジション", ["GK", "DF", "MF", "FW"], index=["GK", "DF", "MF", "FW"].index(row['position']))
-                            # バリデーション: 身長100-250, 体重30-150
                             e_height = st.number_input("身長 (cm)", value=float(row['height']), min_value=100.0, max_value=250.0, step=0.1)
                             e_weight = st.number_input("体重 (kg)", value=float(row['weight']), min_value=30.0, max_value=150.0, step=0.1)
                             st.caption(f"現在のBMI: {bmi}")
@@ -183,9 +193,8 @@ if st.session_state.user_role == "admin":
                     
                     st.divider()
                     
-                    # 削除確認エリア（安全装置）
                     with st.expander("🗑️ 削除メニュー（危険）"):
-                        st.warning(f"本当に {row['name']} 選手を削除しますか？\nこの操作は取り消せません。")
+                        st.warning(f"本当に {row['name']} 選手を削除しますか？")
                         if st.button("本当に削除する", key=f"del_{row['id']}", type="primary"):
                             try:
                                 supabase.table("players").delete().eq("id", row['id']).execute()
@@ -203,7 +212,6 @@ if st.session_state.user_role == "admin":
             n_name = st.text_input("名前")
             n_num = st.number_input("背番号", step=1, value=10)
             n_pos = st.selectbox("ポジション", ["GK", "DF", "MF", "FW"])
-            # バリデーション適用
             n_h = st.number_input("身長 (cm)", value=170.0, min_value=100.0, max_value=250.0, step=0.1)
             n_w = st.number_input("体重 (kg)", value=60.0, min_value=30.0, max_value=150.0, step=0.1)
             n_pw = st.text_input("選手用パスワード", "1234")
@@ -293,7 +301,6 @@ if st.session_state.user_role == "admin":
                 p_target = st.selectbox("対象選手", df_players["name"].tolist())
                 c1, c2 = st.columns(2)
                 with c1:
-                    # バリデーション適用
                     p_w = st.number_input("体重 (kg)", step=0.1, min_value=30.0, max_value=150.0)
                     p_inj = st.radio("怪我", ["なし", "あり"], horizontal=True)
                     p_inj_dt = st.text_input("痛みの詳細")
@@ -330,7 +337,6 @@ if st.session_state.user_role == "admin":
             if not df_players.empty:
                 t_player = st.selectbox("選手", df_players["name"].tolist())
                 t_name = st.selectbox("種目", PHYS_TESTS)
-                # バリデーション: 負の数値を許可しない
                 t_val = st.number_input("数値", step=0.01, min_value=0.0)
                 t_date = st.date_input("測定日", date.today())
                 if st.form_submit_button("保存", use_container_width=True):
@@ -343,7 +349,9 @@ if st.session_state.user_role == "admin":
 # ========== 選手モード ==========
 else:
     my_info = df_players[df_players["name"] == st.session_state.user_name].iloc[0]
-    img_src = my_info.get("image_url") if my_info.get("image_url") else "https://via.placeholder.com/150"
+    # URLならそのまま、そうでなければプレースホルダー
+    img_val = my_info.get("image_url")
+    img_src = img_val if (img_val and str(img_val).startswith("http")) else "https://via.placeholder.com/150"
     my_bmi = calculate_bmi(my_info['height'], my_info['weight'])
     
     st.markdown(f"""
@@ -363,7 +371,6 @@ else:
         st.subheader("今日の体調を入力")
         c1, c2 = st.columns(2)
         with c1:
-            # バリデーション適用
             in_w = st.number_input("今日の体重 (kg)", value=float(my_info['weight']), step=0.1, min_value=30.0, max_value=150.0)
             in_inj = st.radio("怪我・痛み", ["なし", "あり"], horizontal=True, key="injury_radio")
             in_inj_dt = st.text_input("痛みの詳細") if in_inj == "あり" else ""
