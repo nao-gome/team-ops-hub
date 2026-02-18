@@ -38,7 +38,7 @@ def calculate_bmi(height_cm, weight_kg):
         return round(weight_kg / (height_m ** 2), 1)
     return 0
 
-# 画像アップロード関数
+# 画像アップロード関数 (Supabase Storage)
 def upload_image_to_supabase(file, file_name):
     try:
         bucket_name = "player_images"
@@ -54,19 +54,15 @@ def upload_image_to_supabase(file, file_name):
         st.error(f"画像アップロードエラー: {e}")
         return None
 
-# 安全に画像を表示するヘルパー関数（今回の修正の肝）
+# 安全に画像を表示するヘルパー関数
 def show_player_image(image_val, width=100):
     if not image_val:
         st.write("No Image")
         return
-
-    # URLの場合 (Supabase)
     if str(image_val).startswith("http"):
         st.image(image_val, width=width)
-    # ローカルファイルの場合 (存在チェック)
     elif os.path.exists(str(image_val)):
         st.image(image_val, width=width)
-    # どっちでもない場合 (昔のデータでファイルがない等)
     else:
         st.write("No Image")
 
@@ -171,21 +167,35 @@ if st.session_state.user_role == "admin":
                     with st.form(key=f"edit_form_{row['id']}"):
                         c1, c2 = st.columns([1, 3])
                         with c1:
-                            # 修正箇所: 安全な画像表示関数を使用
                             show_player_image(row.get('image_url'))
+                            # 写真更新用アップローダーを追加
+                            e_img = st.file_uploader("新しい写真を挿入", type=["jpg", "png"], key=f"img_edit_{row['id']}")
                         with c2:
                             e_num = st.number_input("背番号", value=int(row['number']), step=1)
                             e_pos = st.selectbox("ポジション", ["GK", "DF", "MF", "FW"], index=["GK", "DF", "MF", "FW"].index(row['position']))
                             e_height = st.number_input("身長 (cm)", value=float(row['height']), min_value=100.0, max_value=250.0, step=0.1)
                             e_weight = st.number_input("体重 (kg)", value=float(row['weight']), min_value=30.0, max_value=150.0, step=0.1)
+                            e_new_pw = st.text_input("新しいパスワード (変更する場合のみ)", type="password", key=f"pw_admin_{row['id']}")
                             st.caption(f"現在のBMI: {bmi}")
 
                         if st.form_submit_button("情報を更新"):
                             try:
-                                supabase.table("players").update({
+                                update_data = {
                                     "number": e_num, "position": e_pos,
                                     "height": e_height, "weight": e_weight
-                                }).eq("id", row['id']).execute()
+                                }
+                                # パスワード更新チェック
+                                if e_new_pw:
+                                    update_data["password_hash"] = hash_password(e_new_pw)
+                                
+                                # 写真更新チェック
+                                if e_img:
+                                    file_name = f"{e_num}_{row['name']}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+                                    uploaded_url = upload_image_to_supabase(e_img, file_name)
+                                    if uploaded_url:
+                                        update_data["image_url"] = uploaded_url
+                                
+                                supabase.table("players").update(update_data).eq("id", row['id']).execute()
                                 st.success(f"{row['name']} の情報を更新しました！")
                                 st.rerun()
                             except Exception as e:
@@ -258,10 +268,8 @@ if st.session_state.user_role == "admin":
                         reasons.append(f"睡眠悪化 (-{prev['sleep']-curr['sleep']})")
                     if (prev["weight"] - curr["weight"] >= 1.5):
                         reasons.append(f"体重急減 (-{prev['weight']-curr['weight']:.1f}kg)")
-                    
                     if reasons:
                         alert_players.append(f"**{player}**: {', '.join(reasons)}")
-            
             if alert_players:
                 for alert in alert_players: st.error(alert)
             else:
@@ -285,7 +293,6 @@ if st.session_state.user_role == "admin":
                 p_cond_plot = p_cond.rename(columns={"fatigue": "疲労度", "sleep": "睡眠の質", "weight": "体重"})
                 st.plotly_chart(px.line(p_cond_plot, x="date", y=["疲労度", "睡眠の質"], markers=True, range_y=[0,6], color_discrete_map=COLOR_MAP), use_container_width=True)
                 st.plotly_chart(px.line(p_cond_plot, x="date", y="体重", markers=True, title="体重推移"), use_container_width=True)
-            
             p_phys = df_phys[df_phys["player_name"] == target].sort_values("date") if not df_phys.empty else pd.DataFrame()
             if not p_phys.empty:
                 t_kind = st.selectbox("種目を選択", PHYS_TESTS)
@@ -308,7 +315,6 @@ if st.session_state.user_role == "admin":
                     p_fat = st.slider("疲労度", 1, 5, 3)
                     p_slp = st.slider("睡眠", 1, 5, 3)
                 p_date = st.date_input("対象日", date.today())
-
                 if st.form_submit_button("代行入力", use_container_width=True):
                     data = {"player_name": p_target, "date": str(p_date), "weight": p_w, "fatigue": p_fat, "sleep": p_slp, "injury": p_inj, "injury_detail": p_inj_dt if p_inj == "あり" else ""}
                     supabase.table("conditions").insert(data).execute()
@@ -349,7 +355,6 @@ if st.session_state.user_role == "admin":
 # ========== 選手モード ==========
 else:
     my_info = df_players[df_players["name"] == st.session_state.user_name].iloc[0]
-    # URLならそのまま、そうでなければプレースホルダー
     img_val = my_info.get("image_url")
     img_src = img_val if (img_val and str(img_val).startswith("http")) else "https://via.placeholder.com/150"
     my_bmi = calculate_bmi(my_info['height'], my_info['weight'])
@@ -365,7 +370,7 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["📝 デイリーコンディション入力", "📊 自分のデータ"])
+    tab1, tab2, tab3 = st.tabs(["📝 デイリーコンディション入力", "📊 自分のデータ", "🔐 パスワード変更"])
 
     with tab1:
         st.subheader("今日の体調を入力")
@@ -389,18 +394,36 @@ else:
             my_cond_plot = my_cond.rename(columns={"fatigue": "疲労度", "sleep": "睡眠の質", "weight": "体重"})
             st.markdown("#### コンディション推移")
             st.plotly_chart(px.line(my_cond_plot, x="date", y=["疲労度", "睡眠の質"], range_y=[0,6], markers=True, color_discrete_map=COLOR_MAP), use_container_width=True)
-            
             st.markdown("#### 体重推移")
             st.plotly_chart(px.line(my_cond_plot, x="date", y="体重", markers=True), use_container_width=True)
-            
             last_w = my_cond.iloc[-1]["weight"]
             height_m = my_info['height'] / 100
             target_w = round(height_m ** 2 * 22, 1)
-            
             m1, m2 = st.columns(2)
-            with m1:
-                st.metric("最新体重", f"{last_w} kg", delta=f"{last_w - my_info['weight']:.1f} kg (前回比)")
-            with m2:
-                st.metric("目標体重 (BMI22)", f"{target_w} kg", delta=f"{last_w - target_w:.1f} kg (差分)", delta_color="off")
+            with m1: st.metric("最新体重", f"{last_w} kg", delta=f"{last_w - my_info['weight']:.1f} kg (前回比)")
+            with m2: st.metric("目標体重 (BMI22)", f"{target_w} kg", delta=f"{last_w - target_w:.1f} kg (差分)", delta_color="off")
         else:
             st.info("まだ記録がありません")
+
+    with tab3:
+        st.subheader("ログインパスワードの変更")
+        with st.form("change_password_form"):
+            curr_pw = st.text_input("現在のパスワード", type="password")
+            new_pw = st.text_input("新しいパスワード", type="password")
+            conf_pw = st.text_input("新しいパスワード (確認)", type="password")
+            
+            if st.form_submit_button("パスワードを更新", use_container_width=True):
+                if hash_password(curr_pw) != my_info['password_hash']:
+                    st.error("現在のパスワードが正しくありません。")
+                elif new_pw != conf_pw:
+                    st.error("新しいパスワードと確認用が一致しません。")
+                elif len(new_pw) < 4:
+                    st.error("パスワードは4文字以上で設定してください。")
+                else:
+                    try:
+                        supabase.table("players").update({
+                            "password_hash": hash_password(new_pw)
+                        }).eq("id", my_info['id']).execute()
+                        st.success("パスワードを更新しました。")
+                    except Exception as e:
+                        st.error(f"更新エラー: {e}")
