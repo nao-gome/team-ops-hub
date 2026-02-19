@@ -177,6 +177,8 @@ if st.session_state.user_role == "admin":
                             show_player_image(row.get('image_url'))
                             e_img = st.file_uploader("写真を更新", type=["jpg", "png", "jpeg"], key=f"img_up_{row['id']}")
                         with c2:
+                            # 名前の編集フィールド
+                            e_name = st.text_input("名前", value=row['name'], key=f"name_edit_{row['id']}")
                             e_num = st.number_input("背番号", value=int(row['number']), step=1)
                             e_pos = st.selectbox("ポジション", ["GK", "DF", "MF", "FW"], index=["GK", "DF", "MF", "FW"].index(row['position']))
                             e_height = st.number_input("身長 (cm)", value=float(row['height']), min_value=100.0, max_value=250.0, step=0.1)
@@ -187,6 +189,7 @@ if st.session_state.user_role == "admin":
                         if st.form_submit_button("情報を更新"):
                             try:
                                 update_data = {
+                                    "name": e_name,  # CASCADE設定により、ここで名前を変えれば関連データも自動追従します
                                     "number": e_num, "position": e_pos,
                                     "height": e_height, "weight": e_weight
                                 }
@@ -201,8 +204,9 @@ if st.session_state.user_role == "admin":
                                         st.error("画像のアップロードに失敗したため、他の情報の更新を中断しました。")
                                         st.stop()
 
+                                # DB更新 (シンプルにplayersテーブルのみを更新)
                                 supabase.table("players").update(update_data).eq("id", row['id']).execute()
-                                st.success(f"{row['name']} 選手の情報を更新しました！")
+                                st.success(f"{e_name} 選手の情報を更新しました！")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"更新エラー: {e}")
@@ -284,7 +288,45 @@ if st.session_state.user_role == "admin":
             df_avg = df_cond.groupby("date")[["fatigue", "sleep"]].mean().reset_index().rename(columns={"fatigue": "疲労度", "sleep": "睡眠の質"})
             st.plotly_chart(px.line(df_avg, x="date", y=["疲労度", "睡眠の質"], range_y=[0, 6], markers=True, color_discrete_map=COLOR_MAP), use_container_width=True)
 
-    # 4. 代行
+        st.divider()
+        
+        # 個人詳細分析
+        st.subheader("👤 個人詳細分析")
+        if not df_players.empty:
+            target_player = st.selectbox("分析する選手を選択", df_players["name"].tolist(), key="admin_analysis_target")
+            
+            p_cond = pd.DataFrame()
+            if not df_cond.empty and "player_name" in df_cond.columns:
+                p_cond = df_cond[df_cond["player_name"] == target_player].sort_values("date")
+                
+            if not p_cond.empty:
+                p_cond_plot = p_cond.rename(columns={"fatigue": "疲労度", "sleep": "睡眠の質", "weight": "体重"})
+                st.markdown("#### コンディション・睡眠 推移")
+                st.plotly_chart(px.line(p_cond_plot, x="date", y=["疲労度", "睡眠の質"], markers=True, range_y=[0,6], color_discrete_map=COLOR_MAP), use_container_width=True)
+                st.markdown("#### 体重 推移")
+                st.plotly_chart(px.line(p_cond_plot, x="date", y="体重", markers=True), use_container_width=True)
+            else:
+                st.info(f"「{target_player}」選手のコンディションデータはまだありません。")
+                
+            p_phys = pd.DataFrame()
+            if not df_phys.empty and "player_name" in df_phys.columns:
+                p_phys = df_phys[df_phys["player_name"] == target_player].sort_values("date")
+            
+            if not p_phys.empty:
+                st.markdown("#### フィジカルテスト履歴")
+                t_kind = st.selectbox("種目を選択", PHYS_TESTS, key="admin_phys_kind")
+                if "test_name" in p_phys.columns:
+                    p_test = p_phys[p_phys["test_name"] == t_kind]
+                    if not p_test.empty:
+                        st.plotly_chart(px.line(p_test, x="date", y="value", markers=True, title=f"{t_kind}の推移"), use_container_width=True)
+                    else:
+                        st.write("この種目の記録はありません。")
+                else:
+                    st.write("記録データが不正です。")
+        else:
+            st.info("選手が登録されていません。")
+
+    # 4. 代行 (st.containerで即時反映UI)
     with tabs[3]:
         st.subheader("💊 コンディション記録代行")
         with st.container(border=True):
@@ -311,7 +353,7 @@ if st.session_state.user_role == "admin":
             else:
                 st.info("選手が登録されていません。")
 
-    # 5. ランキング
+    # 5. ランキング (空データ回避処理を復活)
     with tabs[4]:
         st.subheader("🏆 フィジカルランキング")
         if not df_phys.empty and "test_name" in df_phys.columns:
@@ -362,6 +404,7 @@ else:
 
     tab1, tab2, tab3 = st.tabs(["📝 コンディション入力", "📊 履歴", "🔐 パスワード"])
 
+    # 選手入力画面 (st.containerで即時反映UI)
     with tab1:
         with st.container(border=True):
             c1, c2 = st.columns(2)
