@@ -53,10 +53,7 @@ def calculate_streak(player_name, df_cond):
     streak = 0
     check_date = today
     
-    # 過去100日分を遡ってストリークを確認
     for _ in range(100):
-        # weekday(): 0=月, 1=火, 2=水, 3=木, 4=金, 5=土, 6=日
-        # 月・土・日はストリーク判定から除外（カウントもリセットもしない）
         if check_date.weekday() in [0, 5, 6]:
             check_date -= timedelta(days=1)
             continue
@@ -64,8 +61,6 @@ def calculate_streak(player_name, df_cond):
         if check_date in input_dates:
             streak += 1
         else:
-            # 入力がない日が「今日」の場合はまだ猶予があるのでリセットしない
-            # 過去の対象日に入力がなければそこでストリーク終了
             if check_date != today:
                 break
                 
@@ -165,27 +160,54 @@ if "user_name" not in st.session_state: st.session_state.user_name = None
 if not st.session_state.authenticated:
     st.markdown('<div class="full-width-header"><h1>⚽ LOGIN</h1></div>', unsafe_allow_html=True)
     with st.container(border=True):
-        u_id = st.text_input("名前 (Name)")
+        # 【追加】ログイン種別の選択
+        login_type = st.radio("ログイン種別を選択してください", ["選手", "保護者", "管理者"], horizontal=True)
+        
+        if login_type == "管理者":
+            u_id = st.text_input("管理者ID", value="admin")
+        else:
+            u_id = st.text_input("選手の名前 (Name)")
+            
         u_pw = st.text_input("パスワード", type="password")
+        
         if st.button("ログイン", use_container_width=True):
-            if u_id == "admin" and u_pw == st.secrets.get("admin_password", "admin123"):
-                st.session_state.authenticated, st.session_state.user_role, st.session_state.user_name = True, "admin", "管理者"
-                st.rerun()
-            h_pw = hash_password(u_pw)
-            try:
-                res = supabase.table("players").select("*").eq("name", u_id).eq("password_hash", h_pw).execute()
-                if res.data:
-                    st.session_state.authenticated, st.session_state.user_role, st.session_state.user_name = True, "player", u_id
+            if login_type == "管理者":
+                if u_id == "admin" and u_pw == st.secrets.get("admin_password", "admin123"):
+                    st.session_state.authenticated = True
+                    st.session_state.user_role = "admin"
+                    st.session_state.user_name = "管理者"
                     st.rerun()
-                else: st.error("名前またはパスワードが違います")
-            except Exception as e: st.error(f"ログインエラー: {e}")
+                else: 
+                    st.error("管理者IDまたはパスワードが違います")
+            else:
+                h_pw = hash_password(u_pw)
+                try:
+                    res = supabase.table("players").select("*").eq("name", u_id).eq("password_hash", h_pw).execute()
+                    if res.data:
+                        st.session_state.authenticated = True
+                        # 保護者を選んだ場合は専用のロールを付与
+                        st.session_state.user_role = "parent" if login_type == "保護者" else "player"
+                        st.session_state.user_name = u_id
+                        st.rerun()
+                    else: 
+                        st.error("名前またはパスワードが違います")
+                except Exception as e: 
+                    st.error(f"ログインエラー: {e}")
     st.stop()
 
 # --- 5. メイン画面 ---
-st.markdown(f'<div class="full-width-header"><h1>⚽ {st.session_state.user_name} モード</h1></div>', unsafe_allow_html=True)
+# 役割に応じたヘッダー表示
+if st.session_state.user_role == "admin":
+    header_text = f"⚽ {st.session_state.user_name} モード"
+elif st.session_state.user_role == "parent":
+    header_text = f"⚽ {st.session_state.user_name} 選手の保護者ページ"
+else:
+    header_text = f"⚽ {st.session_state.user_name} モード"
+
+st.markdown(f'<div class="full-width-header"><h1>{header_text}</h1></div>', unsafe_allow_html=True)
 
 lo_col1, lo_col2 = st.columns([10, 1])
-with lo_col1: st.write(f"Login: **{st.session_state.user_name}**")
+with lo_col1: st.write(f"Login: **{st.session_state.user_name}** ({st.session_state.user_role})")
 with lo_col2:
     if st.button("ログアウト", key="logout_btn", use_container_width=True):
         st.session_state.authenticated = False
@@ -323,9 +345,10 @@ if st.session_state.user_role == "admin":
                     supabase.table("physical_tests").insert({"player_name": t_p, "test_name": t_n, "value": t_v, "date": str(t_d)}).execute()
                     st.success("完了")
 
-# ========== 選手モード ==========
+# ========== 選手 / 保護者モード ==========
 else:
-    if st.session_state.get("just_submitted", False):
+    # 選手モード限定：送信時の風船演出
+    if st.session_state.user_role == "player" and st.session_state.get("just_submitted", False):
         st.toast("記録しました！継続は力なり🔥", icon="👏")
         st.balloons()
         st.session_state["just_submitted"] = False
@@ -351,29 +374,38 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📝 コンディション入力", "📊 コンディション履歴", "🔥 パラメーター", "🔐 パスワード"])
+    # ロール（選手か保護者か）によって表示するタブを変える
+    if st.session_state.user_role == "player":
+        tab1, tab2, tab3, tab4 = st.tabs(["📝 コンディション入力", "📊 コンディション履歴", "🔥 パラメーター", "🔐 パスワード"])
+    else:
+        # 保護者の場合は、入力とパスワード変更タブを隠す
+        st.info("💡 保護者モードではデータの閲覧のみ可能です。毎日のコンディション入力は選手本人の画面から行われます。")
+        tab2, tab3 = st.tabs(["📊 成長・コンディション履歴", "🔥 身体能力パラメーター"])
 
-    with tab1:
-        with st.container(border=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                in_w = st.number_input("今日の体重 (kg)", value=float(my_info['weight']), step=0.1, min_value=30.0, max_value=150.0, key="daily_w")
-                in_inj = st.radio("怪我・痛み", ["なし", "あり"], horizontal=True, key="daily_inj")
-                in_inj_dt = st.text_input("痛みの詳細", key="daily_inj_dt") if in_inj == "あり" else ""
-            with c2:
-                in_fat = st.slider("疲労度 (1-5)", 1, 5, 3, key="daily_fat")
-                in_slp = st.slider("睡眠 (1-5)", 1, 5, 3, key="daily_slp")
-                
-            if st.button("送信", use_container_width=True, key="daily_submit"):
-                data = {
-                    "player_name": st.session_state.user_name, "date": str(date.today()), 
-                    "weight": in_w, "fatigue": in_fat, "sleep": in_slp, 
-                    "injury": in_inj, "injury_detail": in_inj_dt
-                }
-                supabase.table("conditions").insert(data).execute()
-                st.session_state["just_submitted"] = True
-                st.rerun()
+    # --- tab1: コンディション入力 (選手のみ) ---
+    if st.session_state.user_role == "player":
+        with tab1:
+            with st.container(border=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    in_w = st.number_input("今日の体重 (kg)", value=float(my_info['weight']), step=0.1, min_value=30.0, max_value=150.0, key="daily_w")
+                    in_inj = st.radio("怪我・痛み", ["なし", "あり"], horizontal=True, key="daily_inj")
+                    in_inj_dt = st.text_input("痛みの詳細", key="daily_inj_dt") if in_inj == "あり" else ""
+                with c2:
+                    in_fat = st.slider("疲労度 (1-5)", 1, 5, 3, key="daily_fat")
+                    in_slp = st.slider("睡眠 (1-5)", 1, 5, 3, key="daily_slp")
+                    
+                if st.button("送信", use_container_width=True, key="daily_submit"):
+                    data = {
+                        "player_name": st.session_state.user_name, "date": str(date.today()), 
+                        "weight": in_w, "fatigue": in_fat, "sleep": in_slp, 
+                        "injury": in_inj, "injury_detail": in_inj_dt
+                    }
+                    supabase.table("conditions").insert(data).execute()
+                    st.session_state["just_submitted"] = True
+                    st.rerun()
 
+    # --- tab2: コンディション履歴 (共通) ---
     with tab2:
         my_cond = pd.DataFrame()
         if not df_cond.empty and "player_name" in df_cond.columns:
@@ -399,10 +431,7 @@ else:
             with m1: st.metric("最新体重", f"{last_w} kg", delta=f"{last_w - prev_w:.1f} kg (前回比)")
             with m2: st.metric("目標体重 (U-18/BMI22基準)", f"{target_w} kg", delta=f"{last_w - target_w:.1f} kg (差分)", delta_color="off")
 
-            # ---------------------------------------------------------
-            # アイデア3: 目標体重までの経験値バー（プログレスバー）
-            # ---------------------------------------------------------
-            st.markdown("<br>", unsafe_allow_html=True) # 少し余白をあける
+            st.markdown("<br>", unsafe_allow_html=True)
             progress_val = min(last_w / target_w, 1.0) if target_w > 0 else 0.0
             progress_percent = progress_val * 100
             
@@ -413,10 +442,11 @@ else:
                 st.success("🎉 目標体重クリア！素晴らしいフィジカルです！")
 
         else: 
-            st.info("データがまだありません。「📝 コンディション入力」から今日の状態を送信してください！")
+            st.info("データがまだありません。")
 
+    # --- tab3: パラメーター (共通) ---
     with tab3:
-        st.subheader("🔥 自分の能力パラメーター")
+        st.subheader("🔥 身体能力パラメーター")
         st.caption("※チーム内の成績をもとにした相対評価（0〜100）です。")
         
         df_radar = calculate_physical_score(st.session_state.user_name, df_phys)
@@ -433,12 +463,14 @@ else:
         else:
             st.info("まだフィジカルテストの記録がありません。測定日をお楽しみに！")
 
-    with tab4:
-        with st.form("pw_form"):
-            curr_pw, new_pw = st.text_input("現在のパスワード", type="password"), st.text_input("新しいパスワード", type="password")
-            if st.form_submit_button("更新"):
-                if hash_password(curr_pw) == my_info['password_hash'] and len(new_pw) >= 4:
-                    supabase.table("players").update({"password_hash": hash_password(new_pw)}).eq("id", my_info['id']).execute()
-                    st.success("完了！")
-                else: 
-                    st.error("不備あり")
+    # --- tab4: パスワード (選手のみ) ---
+    if st.session_state.user_role == "player":
+        with tab4:
+            with st.form("pw_form"):
+                curr_pw, new_pw = st.text_input("現在のパスワード", type="password"), st.text_input("新しいパスワード", type="password")
+                if st.form_submit_button("更新"):
+                    if hash_password(curr_pw) == my_info['password_hash'] and len(new_pw) >= 4:
+                        supabase.table("players").update({"password_hash": hash_password(new_pw)}).eq("id", my_info['id']).execute()
+                        st.success("完了！")
+                    else: 
+                        st.error("不備あり")
