@@ -68,7 +68,7 @@ def calculate_streak(player_name, df_cond):
         
     return streak
 
-# フィジカルテストのスコア化（サカゲー風0-100スケール）関数
+# フィジカルテストのスコア化
 def calculate_physical_score(player_name, df_phys):
     if df_phys.empty or "test_name" not in df_phys.columns:
         return pd.DataFrame()
@@ -101,7 +101,7 @@ def calculate_physical_score(player_name, df_phys):
         
     return pd.DataFrame(scores)
 
-# 画像アップロード関数 (完全英数化)
+# 選手画像アップロード
 def upload_image_to_supabase(file, prefix="player"):
     try:
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -116,6 +116,26 @@ def upload_image_to_supabase(file, prefix="player"):
         st.error(f"画像アップロードエラー: {e}")
         return None
 
+# ドキュメント(PDF等)アップロード【修正版】
+def upload_document_to_supabase(file):
+    try:
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        # 元のファイル名から拡張子（.pdfなど）だけを抽出する
+        ext = os.path.splitext(file.name)[1]
+        
+        # 日本語エラーを回避するため、「doc_タイムスタンプ.pdf」という完全な英数ファイル名に変換して保存
+        safe_file_name = f"doc_{timestamp}{ext}"
+        
+        bucket_name = "club_documents"
+        file_bytes = file.getvalue()
+        supabase.storage.from_(bucket_name).upload(safe_file_name, file_bytes, {"content-type": file.type, "upsert": "true"})
+        res = supabase.storage.from_(bucket_name).get_public_url(safe_file_name)
+        if isinstance(res, str): return res
+        return getattr(res, 'public_url', str(res))
+    except Exception as e:
+        st.error(f"ファイルアップロードエラー: {e}")
+        return None
+    
 def show_player_image(image_val, width=120):
     if not image_val:
         st.write("No Image")
@@ -146,6 +166,12 @@ st.markdown("""
     .profile-photo img { width: 100%; height: 100%; object-fit: cover; }
     
     div[data-testid="stExpander"] details summary p { font-weight: bold; }
+    
+    .doc-link-btn {
+        display: inline-block; padding: 10px 20px; background-color: #ff9900; color: white;
+        text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 10px;
+    }
+    .doc-link-btn:hover { background-color: #e68a00; color: white; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -160,7 +186,6 @@ if "user_name" not in st.session_state: st.session_state.user_name = None
 if not st.session_state.authenticated:
     st.markdown('<div class="full-width-header"><h1>⚽ LOGIN</h1></div>', unsafe_allow_html=True)
     with st.container(border=True):
-        # 【追加】ログイン種別の選択
         login_type = st.radio("ログイン種別を選択してください", ["選手", "保護者", "管理者"], horizontal=True)
         
         if login_type == "管理者":
@@ -185,7 +210,6 @@ if not st.session_state.authenticated:
                     res = supabase.table("players").select("*").eq("name", u_id).eq("password_hash", h_pw).execute()
                     if res.data:
                         st.session_state.authenticated = True
-                        # 保護者を選んだ場合は専用のロールを付与
                         st.session_state.user_role = "parent" if login_type == "保護者" else "player"
                         st.session_state.user_name = u_id
                         st.rerun()
@@ -196,7 +220,6 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 5. メイン画面 ---
-# 役割に応じたヘッダー表示
 if st.session_state.user_role == "admin":
     header_text = f"⚽ {st.session_state.user_name} モード"
 elif st.session_state.user_role == "parent":
@@ -219,10 +242,11 @@ st.divider()
 df_players = fetch_table_as_df("players")
 df_cond = fetch_table_as_df("conditions")
 df_phys = fetch_table_as_df("physical_tests")
+df_tactics = fetch_table_as_df("tactics_board") 
 
 # ========== 管理者モード ==========
 if st.session_state.user_role == "admin":
-    tabs = st.tabs(["📋 名簿・編集", "👤 新規登録", "📈 分析", "💊 代行入力", "🏆 ランキング", "⏱️ テスト入力"])
+    tabs = st.tabs(["📋 名簿・編集", "👤 新規登録", "📈 分析", "💊 代行入力", "🏆 ランキング", "⏱️ テスト入力", "🎬 戦術 / 📄 資料"])
 
     with tabs[0]:
         st.subheader("選手情報の編集・更新")
@@ -344,10 +368,67 @@ if st.session_state.user_role == "admin":
                 if st.form_submit_button("保存"):
                     supabase.table("physical_tests").insert({"player_name": t_p, "test_name": t_n, "value": t_v, "date": str(t_d)}).execute()
                     st.success("完了")
+                    
+    # 【改修】管理者の戦術/資料共有タブ
+    with tabs[6]:
+        st.subheader("🎬 戦術動画 / 📄 保護者向け資料 の共有")
+        st.info("選手には「戦術」カテゴリーが、保護者には「保護者向け資料」カテゴリーだけが表示されます。")
+        with st.form("tactics_form", clear_on_submit=True):
+            t_title = st.text_input("タイトル (例: 栄養管理について / 対戦相手スカウティング)")
+            t_cat = st.selectbox("カテゴリー", ["自チームの戦術モデル", "対戦相手スカウティング", "保護者向け資料 (PDF/画像)", "その他（モチベーション等）"])
+            t_desc = st.text_area("コーチからのコメント・解説")
+            
+            st.markdown("---")
+            st.write("▼ 共有するコンテンツ（どちらか一方を入力してください）")
+            t_url = st.text_input("A. YouTube動画のURL (戦術共有用)")
+            t_file = st.file_uploader("B. PDF・画像ファイルのアップロード (保護者向け資料用)", type=["pdf", "png", "jpg", "jpeg"])
+            
+            if st.form_submit_button("チームに共有する", use_container_width=True):
+                if not t_title:
+                    st.error("タイトルは必須項目です。")
+                elif not t_url and not t_file:
+                    st.error("YouTubeのURLか、ファイルのどちらかを入力してください。")
+                else:
+                    media_link = ""
+                    m_type = ""
+                    
+                    if t_file:
+                        # ファイルがアップロードされた場合
+                        uploaded_url = upload_document_to_supabase(t_file)
+                        if uploaded_url:
+                            media_link = uploaded_url
+                            m_type = "document"
+                        else:
+                            st.stop()
+                    else:
+                        # URLが入力された場合
+                        media_link = t_url
+                        m_type = "youtube"
+
+                    data = {"title": t_title, "category": t_cat, "description": t_desc, "media_url": media_link, "media_type": m_type}
+                    supabase.table("tactics_board").insert(data).execute()
+                    st.success("共有が完了しました！")
+                    st.rerun()
+        
+        st.divider()
+        st.subheader("🗑️ 共有済みのコンテンツ一覧")
+        if not df_tactics.empty:
+            for i, row in df_tactics.sort_values("id", ascending=False).iterrows():
+                with st.expander(f"[{row['category']}] {row['title']}"):
+                    st.write(row['description'])
+                    if row['media_type'] == "document":
+                        st.markdown(f"[📄 ダウンロード/閲覧する]({row['media_url']})")
+                    else:
+                        st.write(f"URL: {row['media_url']}")
+                        
+                    if st.button("この投稿を削除", key=f"del_tac_{row['id']}"):
+                        supabase.table("tactics_board").delete().eq("id", row['id']).execute()
+                        st.rerun()
+        else:
+            st.info("現在共有されているコンテンツはありません。")
 
 # ========== 選手 / 保護者モード ==========
 else:
-    # 選手モード限定：送信時の風船演出
     if st.session_state.user_role == "player" and st.session_state.get("just_submitted", False):
         st.toast("記録しました！継続は力なり🔥", icon="👏")
         st.balloons()
@@ -374,15 +455,15 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    # ロール（選手か保護者か）によって表示するタブを変える
     if st.session_state.user_role == "player":
-        tab1, tab2, tab3, tab4 = st.tabs(["📝 コンディション入力", "📊 コンディション履歴", "🔥 パラメーター", "🔐 パスワード"])
+        # 選手用タブ構成
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 入力", "📊 履歴", "🔥 パラメーター", "🔐 PW", "🎬 戦術ボード"])
     else:
-        # 保護者の場合は、入力とパスワード変更タブを隠す
         st.info("💡 保護者モードではデータの閲覧のみ可能です。毎日のコンディション入力は選手本人の画面から行われます。")
-        tab2, tab3 = st.tabs(["📊 成長・コンディション履歴", "🔥 身体能力パラメーター"])
+        # 保護者用タブ構成
+        tab2, tab3, tab5 = st.tabs(["📊 コンディション履歴", "🔥 パラメーター", "📄 お便り・資料"])
 
-    # --- tab1: コンディション入力 (選手のみ) ---
+    # --- 選手用: コンディション入力 ---
     if st.session_state.user_role == "player":
         with tab1:
             with st.container(border=True):
@@ -405,7 +486,7 @@ else:
                     st.session_state["just_submitted"] = True
                     st.rerun()
 
-    # --- tab2: コンディション履歴 (共通) ---
+    # --- 共通: 履歴タブ ---
     with tab2:
         my_cond = pd.DataFrame()
         if not df_cond.empty and "player_name" in df_cond.columns:
@@ -444,7 +525,7 @@ else:
         else: 
             st.info("データがまだありません。")
 
-    # --- tab3: パラメーター (共通) ---
+    # --- 共通: パラメーター ---
     with tab3:
         st.subheader("🔥 身体能力パラメーター")
         st.caption("※チーム内の成績をもとにした相対評価（0〜100）です。")
@@ -463,7 +544,7 @@ else:
         else:
             st.info("まだフィジカルテストの記録がありません。測定日をお楽しみに！")
 
-    # --- tab4: パスワード (選手のみ) ---
+    # --- 選手用: パスワード変更 ---
     if st.session_state.user_role == "player":
         with tab4:
             with st.form("pw_form"):
@@ -474,3 +555,36 @@ else:
                         st.success("完了！")
                     else: 
                         st.error("不備あり")
+                        
+    # --- 【出し分け】戦術ルーム (選手) / お便り (保護者) ---
+    with tab5:
+        if not df_tactics.empty:
+            # 選手なら「保護者向け資料」以外を表示。保護者なら「保護者向け資料」だけを表示。
+            if st.session_state.user_role == "player":
+                st.subheader("🎬 戦術＆スカウティングボード")
+                display_data = df_tactics[df_tactics["category"] != "保護者向け資料 (PDF/画像)"]
+            else:
+                st.subheader("📄 クラブからの栄養・広報だより")
+                display_data = df_tactics[df_tactics["category"] == "保護者向け資料 (PDF/画像)"]
+
+            if not display_data.empty:
+                for i, row in display_data.sort_values("id", ascending=False).iterrows():
+                    with st.expander(f"[{row['category']}] {row['title']}", expanded=True):
+                        if row['description']:
+                            st.markdown(f"**📝 コメント:**\n\n{row['description']}")
+                            st.markdown("<br>", unsafe_allow_html=True)
+                        
+                        # ファイル形式に応じた表示
+                        if row['media_type'] == "document":
+                            st.markdown(f"<a href='{row['media_url']}' target='_blank' class='doc-link-btn'>📄 {row['title']} を開く</a>", unsafe_allow_html=True)
+                        elif "youtube.com" in row['media_url'] or "youtu.be" in row['media_url']:
+                            st.video(row['media_url'])
+                        else:
+                            st.write(row['media_url'])
+            else:
+                if st.session_state.user_role == "player":
+                    st.info("現在共有されている戦術映像はありません。")
+                else:
+                    st.info("現在共有されている資料はありません。")
+        else:
+            st.info("現在共有されているコンテンツはありません。")
